@@ -28,9 +28,6 @@ ALERTED_FILE    = "alerted.json"
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# ETF ALERT TRACKER — in memory, resets daily
-# ============================================================
 ETF_ALERTED = {}
 
 # ============================================================
@@ -76,7 +73,7 @@ INTL_ETFS = {
 }
 
 # ============================================================
-# FETCH ETF LOSERS — top 5 worst
+# FETCH ETF LOSERS — top 5
 # ============================================================
 def fetch_etf_losers(symbols_dict):
     results = []
@@ -99,7 +96,7 @@ def fetch_etf_losers(symbols_dict):
     return results[:5]
 
 # ============================================================
-# ETF 3% DROP ALERT — checks every 5 mins, alerts once per ETF per day
+# ETF 3% DROP — EMAIL ALERT ONLY
 # ============================================================
 def job_etf_alerts():
     global ETF_ALERTED
@@ -118,32 +115,109 @@ def job_etf_alerts():
             pct       = round(((price - prev) / prev) * 100, 2)
             currency  = "₹" if ".NS" in symbol else "$"
             alert_key = f"{symbol}_{today_key}"
+            flag      = "🇮🇳" if ".NS" in symbol else "🌍"
 
-            # Only alert if down 3%+ AND not already alerted today
             if pct <= -3.0 and not ETF_ALERTED.get(alert_key):
-                flag = "🇮🇳" if ".NS" in symbol else "🌍"
-                alerts.append(
-                    f"{flag} <b>{name}</b>\n"
-                    f"    📉 Down <b>{abs(pct)}%</b> today\n"
-                    f"    💰 Price: {currency}{price:,.2f}"
-                )
+                alerts.append({
+                    "name": name, "symbol": symbol,
+                    "price": price, "pct": pct,
+                    "currency": currency, "flag": flag,
+                    "change": round(price - prev, 2)
+                })
                 ETF_ALERTED[alert_key] = True
 
         except Exception as e:
             logger.error(f"ETF alert check error {name}: {e}")
 
     if alerts:
-        send_to_all_sync(
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🚨 <b>ETF DROP ALERT!</b>\n"
-            f"⚠️ Down 3% or more\n"
-            f"━━━━━━━━━━━━━━━━━━━\n\n"
-            + "\n\n".join(alerts)
-            + f"\n\n<i>Checked at {datetime.now().strftime('%I:%M %p')} IST</i>"
-        )
+        send_etf_alert_email(alerts)
+
+def send_etf_alert_email(alerts):
+    try:
+        date = datetime.now().strftime("%d %b %Y %I:%M %p")
+
+        def rows(etfs):
+            html = ""
+            for i, e in enumerate(etfs, 1):
+                bg = "#fff5f5" if i % 2 == 0 else "#ffffff"
+                html += f"""
+                <tr style="background:{bg}">
+                    <td style="padding:12px 10px;font-size:18px">{e['flag']}</td>
+                    <td style="padding:12px 10px">
+                        <b style="color:#2c3e50">{e['name']}</b><br>
+                        <span style="font-size:11px;color:#aaa">{e['symbol']}</span>
+                    </td>
+                    <td style="padding:12px 10px;font-weight:600">{e['currency']}{e['price']:,.2f}</td>
+                    <td style="padding:12px 10px;color:#e74c3c;font-weight:700;font-size:15px">▼ {abs(e['pct'])}%</td>
+                    <td style="padding:12px 10px;color:#e74c3c">{e['currency']}{abs(e['change']):,.2f}</td>
+                </tr>"""
+            return html
+
+        html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+body{{font-family:Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px}}
+.container{{max-width:650px;margin:auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.1)}}
+.header{{background:linear-gradient(135deg,#7b0000,#c0392b);color:white;padding:30px;text-align:center}}
+.header h1{{margin:0;font-size:24px}}
+.header p{{margin:8px 0 0;opacity:.85;font-size:14px}}
+.alert-box{{background:#fff5f5;border:2px solid #e74c3c;border-radius:8px;padding:15px;margin:20px 25px;text-align:center}}
+.alert-box p{{margin:0;color:#c0392b;font-weight:600;font-size:14px}}
+.section{{padding:0 25px 25px}}
+table{{width:100%;border-collapse:collapse;font-size:14px}}
+th{{background:#f8f9fa;padding:10px;text-align:left;font-size:11px;color:#666;border-bottom:2px solid #eee;text-transform:uppercase;letter-spacing:0.5px}}
+.footer{{background:#f8f9fa;padding:20px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee}}
+</style></head><body>
+<div class="container">
+
+<div class="header">
+  <h1>🚨 ETF Drop Alert!</h1>
+  <p>One or more ETFs have dropped <b>3% or more</b></p>
+  <p style="margin-top:6px">⏰ {date} IST</p>
+</div>
+
+<div class="alert-box">
+  <p>⚠️ Amit Sir, immediate attention may be required on the following ETFs</p>
+</div>
+
+<div class="section">
+  <table>
+    <thead><tr>
+      <th></th>
+      <th>ETF Name</th>
+      <th>Current Price</th>
+      <th>Drop %</th>
+      <th>Drop Amount</th>
+    </tr></thead>
+    <tbody>{rows(alerts)}</tbody>
+  </table>
+</div>
+
+<div class="footer">
+  <p>🤖 <b>AmitDailyUpdatesBot</b> · Automated ETF Alert System</p>
+  <p style="color:#aaa;font-size:11px;margin-top:4px">
+    Each ETF alerts only <b>once per day</b> · Checks every 5 minutes · Data from Yahoo Finance
+  </p>
+</div>
+
+</div></body></html>"""
+
+        msg            = MIMEMultipart("alternative")
+        msg["Subject"] = f"🚨 ETF Drop Alert (-3%+) — {datetime.now().strftime('%d %b %Y %I:%M %p')}"
+        msg["From"]    = SENDER_EMAIL
+        msg["To"]      = ", ".join(RECIPIENTS)
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
+
+        logger.info(f"✅ ETF alert email sent for {len(alerts)} ETFs!")
+    except Exception as e:
+        logger.error(f"ETF alert email error: {e}")
 
 # ============================================================
-# ETF TELEGRAM REPORT
+# ETF TELEGRAM REPORT — 6AM and 3:30PM
 # ============================================================
 async def send_etf_telegram(bot, chat_id, label=""):
     try:
@@ -173,14 +247,14 @@ async def send_etf_telegram(bot, chat_id, label=""):
                 f"{indian_lines}\n\n"
                 f"🌍 <b>International ETFs — Biggest Losers</b>\n\n"
                 f"{intl_lines}\n\n"
-                f"<i>🚨 You'll get an alert if any ETF drops 3%+</i>"
+                f"<i>📧 You'll get an email alert if any ETF drops 3%+</i>"
             )
         )
     except Exception as e:
         logger.error(f"ETF Telegram error: {e}")
 
 # ============================================================
-# ETF EMAIL
+# DAILY ETF EMAIL — 6AM
 # ============================================================
 def build_email_html(indian, intl):
     date = datetime.now().strftime("%d %b %Y")
@@ -216,7 +290,6 @@ body{{font-family:Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px}}
 table{{width:100%;border-collapse:collapse;font-size:14px}}
 th{{background:#f8f9fa;padding:10px;text-align:left;font-size:12px;color:#666;border-bottom:2px solid #eee;text-transform:uppercase}}
 .footer{{background:#f8f9fa;padding:20px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee}}
-.badge{{background:#e67e22;color:white;padding:4px 14px;border-radius:20px;font-size:12px;font-weight:600;display:inline-block;margin-top:8px}}
 </style></head><body>
 <div class="container">
 <div class="header">
@@ -238,14 +311,14 @@ th{{background:#f8f9fa;padding:10px;text-align:left;font-size:12px;color:#666;bo
 </div>
 <div class="footer">
   <p>🤖 Powered by <b>AmitDailyUpdatesBot</b></p>
-  <p style="margin-top:4px">Built by <b>Ranveer Singh</b> · Runs 24/7 on cloud · Zero maintenance</p>
+  <p style="margin-top:4px">Built by <b>Ranveer Singh</b> · Runs 24/7 on cloud</p>
   <p style="margin-top:8px;color:#aaa;font-size:11px">Live data from Yahoo Finance · Auto sent every day at 6:00 AM IST</p>
 </div>
 </div></body></html>"""
 
 def send_etf_email():
     try:
-        logger.info("Sending ETF email...")
+        logger.info("Sending daily ETF email...")
         indian = fetch_etf_losers(INDIAN_ETFS)
         intl   = fetch_etf_losers(INTL_ETFS)
         html   = build_email_html(indian, intl)
@@ -258,7 +331,7 @@ def send_etf_email():
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
-        logger.info("✅ ETF email sent!")
+        logger.info("✅ Daily ETF email sent!")
     except Exception as e:
         logger.error(f"Email error: {e}")
 
@@ -284,8 +357,7 @@ def get_tech_news(count=5):
         url = f"https://gnews.io/api/v4/top-headlines?topic=technology&lang=en&max={count}&apikey={GNEWS_API_KEY}"
         res = requests.get(url, timeout=10).json()
         articles = res.get("articles", [])
-        if not articles:
-            return "No tech news found."
+        if not articles: return "No tech news found."
         return "\n\n".join([
             f"<b>{i}.</b> {a['title']}\n    <i>— {a.get('source',{}).get('name','')}</i>"
             for i, a in enumerate(articles[:count], 1)
@@ -298,8 +370,7 @@ def get_business_news(count=5):
         url = f"https://gnews.io/api/v4/top-headlines?topic=business&lang=en&max={count}&apikey={GNEWS_API_KEY}"
         res = requests.get(url, timeout=10).json()
         articles = res.get("articles", [])
-        if not articles:
-            return "No business news found."
+        if not articles: return "No business news found."
         return "\n\n".join([
             f"<b>{i}.</b> {a['title']}\n    <i>— {a.get('source',{}).get('name','')}</i>"
             for i, a in enumerate(articles[:count], 1)
@@ -383,7 +454,6 @@ def send_to_all_sync(text):
 async def send_morning_briefing(bot, chat_id):
     name = load_json(USERS_FILE).get(str(chat_id), {}).get("name", "Sir")
     date = datetime.now().strftime('%d %b %Y')
-
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
         f"━━━━━━━━━━━━━━━━━━━\n🌅 <b>Good Morning, {name}!</b>\n📅 {date}\n━━━━━━━━━━━━━━━━━━━\n\n"
         f"📰 <b>TOP 10 INDIA NEWS</b>\n\n{get_news('India', 10)}"
