@@ -29,6 +29,11 @@ logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ============================================================
+# ETF ALERT TRACKER — in memory, resets daily
+# ============================================================
+ETF_ALERTED = {}
+
+# ============================================================
 # HELPERS
 # ============================================================
 def load_json(file):
@@ -42,7 +47,7 @@ def save_json(file, data):
         json.dump(data, f, indent=2)
 
 # ============================================================
-# ETF DATA
+# ETF LISTS
 # ============================================================
 INDIAN_ETFS = {
     "Nifty BeES":       "NIFTYBEES.NS",
@@ -70,6 +75,9 @@ INTL_ETFS = {
     "Financials (XLF)":       "XLF",
 }
 
+# ============================================================
+# FETCH ETF LOSERS — top 5 worst
+# ============================================================
 def fetch_etf_losers(symbols_dict):
     results = []
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -91,7 +99,51 @@ def fetch_etf_losers(symbols_dict):
     return results[:5]
 
 # ============================================================
-# ETF TELEGRAM MESSAGE
+# ETF 3% DROP ALERT — checks every 5 mins, alerts once per ETF per day
+# ============================================================
+def job_etf_alerts():
+    global ETF_ALERTED
+    today_key = datetime.now().strftime("%Y-%m-%d")
+    headers   = {"User-Agent": "Mozilla/5.0"}
+    all_etfs  = {**INDIAN_ETFS, **INTL_ETFS}
+    alerts    = []
+
+    for name, symbol in all_etfs.items():
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
+            res = requests.get(url, headers=headers, timeout=10).json()
+            meta      = res["chart"]["result"][0]["meta"]
+            price     = meta["regularMarketPrice"]
+            prev      = meta["previousClose"]
+            pct       = round(((price - prev) / prev) * 100, 2)
+            currency  = "₹" if ".NS" in symbol else "$"
+            alert_key = f"{symbol}_{today_key}"
+
+            # Only alert if down 3%+ AND not already alerted today
+            if pct <= -3.0 and not ETF_ALERTED.get(alert_key):
+                flag = "🇮🇳" if ".NS" in symbol else "🌍"
+                alerts.append(
+                    f"{flag} <b>{name}</b>\n"
+                    f"    📉 Down <b>{abs(pct)}%</b> today\n"
+                    f"    💰 Price: {currency}{price:,.2f}"
+                )
+                ETF_ALERTED[alert_key] = True
+
+        except Exception as e:
+            logger.error(f"ETF alert check error {name}: {e}")
+
+    if alerts:
+        send_to_all_sync(
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🚨 <b>ETF DROP ALERT!</b>\n"
+            f"⚠️ Down 3% or more\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            + "\n\n".join(alerts)
+            + f"\n\n<i>Checked at {datetime.now().strftime('%I:%M %p')} IST</i>"
+        )
+
+# ============================================================
+# ETF TELEGRAM REPORT
 # ============================================================
 async def send_etf_telegram(bot, chat_id, label=""):
     try:
@@ -99,11 +151,13 @@ async def send_etf_telegram(bot, chat_id, label=""):
         intl   = fetch_etf_losers(INTL_ETFS)
 
         indian_lines = "\n".join([
-            f"<b>{i}.</b> {e['name']}\n    🔴 {abs(e['pct'])}% &nbsp;|&nbsp; {e['currency']}{e['price']:,.2f}"
+            f"<b>{i}.</b> {e['name']}\n"
+            f"    🔴 {abs(e['pct'])}% &nbsp;|&nbsp; {e['currency']}{e['price']:,.2f}"
             for i, e in enumerate(indian, 1)
         ])
         intl_lines = "\n".join([
-            f"<b>{i}.</b> {e['name']}\n    🔴 {abs(e['pct'])}% &nbsp;|&nbsp; {e['currency']}{e['price']:,.2f}"
+            f"<b>{i}.</b> {e['name']}\n"
+            f"    🔴 {abs(e['pct'])}% &nbsp;|&nbsp; {e['currency']}{e['price']:,.2f}"
             for i, e in enumerate(intl, 1)
         ])
 
@@ -119,7 +173,7 @@ async def send_etf_telegram(bot, chat_id, label=""):
                 f"{indian_lines}\n\n"
                 f"🌍 <b>International ETFs — Biggest Losers</b>\n\n"
                 f"{intl_lines}\n\n"
-                f"<i>Source: Yahoo Finance</i>"
+                f"<i>🚨 You'll get an alert if any ETF drops 3%+</i>"
             )
         )
     except Exception as e:
@@ -134,15 +188,17 @@ def build_email_html(indian, intl):
     def rows(etfs):
         html = ""
         for i, e in enumerate(etfs, 1):
-            bg = "#fff5f5" if i % 2 == 0 else "#ffffff"
+            bg    = "#fff5f5" if i % 2 == 0 else "#ffffff"
+            color = "#e74c3c" if e['pct'] < 0 else "#27ae60"
+            arrow = "▼" if e['pct'] < 0 else "▲"
             html += f"""
             <tr style="background:{bg}">
-                <td style="padding:10px;font-weight:500">{i}</td>
-                <td style="padding:10px"><b>{e['name']}</b><br>
-                    <span style="font-size:12px;color:#888">{e['symbol']}</span></td>
-                <td style="padding:10px;font-weight:500">{e['currency']}{e['price']:,.2f}</td>
-                <td style="padding:10px;color:#e74c3c;font-weight:600">▼ {abs(e['pct'])}%</td>
-                <td style="padding:10px;color:#e74c3c">{e['currency']}{abs(e['change']):,.2f}</td>
+                <td style="padding:12px 10px;font-weight:600;color:#666">{i}</td>
+                <td style="padding:12px 10px"><b style="color:#2c3e50">{e['name']}</b><br>
+                    <span style="font-size:11px;color:#aaa">{e['symbol']}</span></td>
+                <td style="padding:12px 10px;font-weight:600">{e['currency']}{e['price']:,.2f}</td>
+                <td style="padding:12px 10px;color:{color};font-weight:700">{arrow} {abs(e['pct'])}%</td>
+                <td style="padding:12px 10px;color:{color}">{e['currency']}{abs(e['change']):,.2f}</td>
             </tr>"""
         return html
 
@@ -154,34 +210,36 @@ body{{font-family:Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px}}
 .header h1{{margin:0;font-size:22px}}
 .header p{{margin:8px 0 0;opacity:.8;font-size:14px}}
 .section{{padding:25px}}
-.section-title{{font-size:16px;font-weight:700;margin-bottom:15px;padding:10px 15px;border-radius:8px}}
+.section-title{{font-size:15px;font-weight:700;margin-bottom:15px;padding:10px 15px;border-radius:8px}}
 .indian{{background:#fff0f0;color:#c0392b;border-left:4px solid #e74c3c}}
 .intl{{background:#f0f4ff;color:#2c3e8c;border-left:4px solid #3498db}}
 table{{width:100%;border-collapse:collapse;font-size:14px}}
-th{{background:#f8f9fa;padding:10px;text-align:left;font-size:12px;color:#666;border-bottom:2px solid #eee}}
+th{{background:#f8f9fa;padding:10px;text-align:left;font-size:12px;color:#666;border-bottom:2px solid #eee;text-transform:uppercase}}
 .footer{{background:#f8f9fa;padding:20px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee}}
+.badge{{background:#e67e22;color:white;padding:4px 14px;border-radius:20px;font-size:12px;font-weight:600;display:inline-block;margin-top:8px}}
 </style></head><body>
 <div class="container">
 <div class="header">
   <h1>📉 Daily ETF Losers Report</h1>
-  <p>📅 {date} &nbsp;|&nbsp; Top 5 Worst Performing ETFs</p>
-  <p>Good Morning, Amit Sir! Here's your ETF watchlist for today.</p>
+  <p>📅 {date} · Top 5 Worst Performing ETFs</p>
+  <p style="margin-top:6px">Good Morning, Amit Sir! 👋</p>
 </div>
 <div class="section">
   <div class="section-title indian">🇮🇳 Top 5 Indian ETFs — Biggest Losers Today</div>
   <table><thead><tr>
-    <th>#</th><th>ETF Name</th><th>Price</th><th>Change %</th><th>Change ₹</th>
+    <th>#</th><th>ETF Name</th><th>Price</th><th>Change %</th><th>Drop ₹</th>
   </tr></thead><tbody>{rows(indian)}</tbody></table>
 </div>
 <div class="section" style="padding-top:0">
   <div class="section-title intl">🌍 Top 5 International ETFs — Biggest Losers Today</div>
   <table><thead><tr>
-    <th>#</th><th>ETF Name</th><th>Price</th><th>Change %</th><th>Change $</th>
+    <th>#</th><th>ETF Name</th><th>Price</th><th>Change %</th><th>Drop $</th>
   </tr></thead><tbody>{rows(intl)}</tbody></table>
 </div>
 <div class="footer">
-  <p>🤖 Powered by <b>AmitDailyUpdatesBot</b> &nbsp;|&nbsp; Sent automatically at 6:00 AM IST</p>
-  <p style="margin-top:5px;color:#aaa">Data from Yahoo Finance. For informational purposes only.</p>
+  <p>🤖 Powered by <b>AmitDailyUpdatesBot</b></p>
+  <p style="margin-top:4px">Built by <b>Ranveer Singh</b> · Runs 24/7 on cloud · Zero maintenance</p>
+  <p style="margin-top:8px;color:#aaa;font-size:11px">Live data from Yahoo Finance · Auto sent every day at 6:00 AM IST</p>
 </div>
 </div></body></html>"""
 
@@ -196,7 +254,8 @@ def send_etf_email():
         msg["From"]    = SENDER_EMAIL
         msg["To"]      = ", ".join(RECIPIENTS)
         msg.attach(MIMEText(html, "html"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
         logger.info("✅ ETF email sent!")
@@ -325,29 +384,20 @@ async def send_morning_briefing(bot, chat_id):
     name = load_json(USERS_FILE).get(str(chat_id), {}).get("name", "Sir")
     date = datetime.now().strftime('%d %b %Y')
 
-    # 1. News
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
         f"━━━━━━━━━━━━━━━━━━━\n🌅 <b>Good Morning, {name}!</b>\n📅 {date}\n━━━━━━━━━━━━━━━━━━━\n\n"
         f"📰 <b>TOP 10 INDIA NEWS</b>\n\n{get_news('India', 10)}"
     ))
-
-    # 2. Market
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
         f"━━━━━━━━━━━━━━━━━━━\n💹 <b>MARKET & PRICES</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         f"{get_market()}\n\n{get_gold_silver()}"
     ))
-
-    # 3. Tech & Business
     tech = get_tech_news(5); biz = get_business_news(5)
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
         f"━━━━━━━━━━━━━━━━━━━\n💻 <b>TECH NEWS</b>\n━━━━━━━━━━━━━━━━━━━\n\n{tech}\n\n"
         f"━━━━━━━━━━━━━━━━━━━\n💼 <b>BUSINESS NEWS</b>\n━━━━━━━━━━━━━━━━━━━\n\n{biz}"
     ))
-
-    # 4. ETF Losers
     await send_etf_telegram(bot, chat_id, "Morning")
-
-    # 5. Schedule prompt
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
         "━━━━━━━━━━━━━━━━━━━\n📅 <b>TODAY'S SCHEDULE</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         "What's your schedule for today?\n\n"
@@ -357,7 +407,6 @@ async def send_morning_briefing(bot, chat_id):
         "⏰ I'll remind you <b>30 minutes before</b> each task!\n"
         "Type <b>skip</b> if no schedule today."
     ))
-
     waiting = load_json(WAITING_FILE)
     waiting[str(chat_id)] = True
     save_json(WAITING_FILE, waiting)
@@ -388,12 +437,10 @@ def job_afternoon():
     )
 
 def job_market_close():
-    # Market close message
     send_to_all_sync(
         f"━━━━━━━━━━━━━━━━━━━\n🔔 <b>MARKET CLOSED — 3:30 PM</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         f"{get_market()}\n\n{get_gold_silver()}"
     )
-    # ETF losers at close
     for chat_id in load_json(USERS_FILE):
         try:
             asyncio.run_coroutine_threadsafe(
@@ -537,8 +584,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Or type <b>skip</b>.", parse_mode="HTML")
         return
     await update.message.reply_text(
-        "I send updates automatically every day at 6 AM! 😊\n\n"
-        "Use /schedule to set today's reminders.")
+        "I send updates automatically every day at 6 AM! 😊\n\nUse /schedule to set today's reminders.")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id  = str(update.effective_chat.id)
@@ -575,12 +621,13 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
-    scheduler.add_job(job_morning,      "cron", hour=6,  minute=0)
-    scheduler.add_job(job_market_open,  "cron", hour=9,  minute=15)
-    scheduler.add_job(job_afternoon,    "cron", hour=13, minute=0)
-    scheduler.add_job(job_market_close, "cron", hour=15, minute=30)
-    scheduler.add_job(job_evening_news, "cron", hour=19, minute=0)
+    scheduler.add_job(job_morning,      "cron",     hour=6,  minute=0)
+    scheduler.add_job(job_market_open,  "cron",     hour=9,  minute=15)
+    scheduler.add_job(job_afternoon,    "cron",     hour=13, minute=0)
+    scheduler.add_job(job_market_close, "cron",     hour=15, minute=30)
+    scheduler.add_job(job_evening_news, "cron",     hour=19, minute=0)
     scheduler.add_job(job_price_alerts, "interval", minutes=5)
+    scheduler.add_job(job_etf_alerts,   "interval", minutes=5)
     scheduler.add_job(job_reminders,    "interval", minutes=1)
     scheduler.start()
 
