@@ -2,8 +2,11 @@ import logging
 import json
 import os
 import re
+import smtplib
 import requests
 from datetime import datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -12,12 +15,15 @@ import asyncio
 # ============================================================
 # CONFIG
 # ============================================================
-BOT_TOKEN     = "8984000441:AAHZMzhK5sfvtf6rYDWy-KPlQMe9QDIlS30"
-GNEWS_API_KEY = "4d141e6ed9c1c94559d66c74380ba60f"
-USERS_FILE    = "users.json"
-SCHEDULE_FILE = "schedules.json"
-WAITING_FILE  = "waiting.json"
-ALERTED_FILE  = "alerted.json"
+BOT_TOKEN       = "8984000441:AAHZMzhK5sfvtf6rYDWy-KPlQMe9QDIlS30"
+GNEWS_API_KEY   = "4d141e6ed9c1c94559d66c74380ba60f"
+SENDER_EMAIL    = "srv19246@gmail.com"
+SENDER_PASSWORD = "epsy okyw jyqr ztcs"
+RECIPIENTS      = ["ranveersingh8823@gmail.com", "amitindia0001@yahoo.com"]
+USERS_FILE      = "users.json"
+SCHEDULE_FILE   = "schedules.json"
+WAITING_FILE    = "waiting.json"
+ALERTED_FILE    = "alerted.json"
 
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,38 +42,166 @@ def save_json(file, data):
         json.dump(data, f, indent=2)
 
 # ============================================================
-# PARSE SCHEDULE TEXT — shared by both typing and file upload
+# ETF DATA
 # ============================================================
-def parse_schedule_text(text):
-    tasks = []
-    # Match patterns like: 9:00 AM Meeting, 09:00 AM Meeting, 9AM Meeting
-    pattern = re.compile(
-        r'(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)|\d{1,2}\s*(?:AM|PM|am|pm))'
-        r'\s*[-–:]?\s*(.+)',
-        re.IGNORECASE
-    )
-    for line in text.strip().split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        match = pattern.search(line)
-        if match:
-            raw_time = match.group(1).strip().upper().replace(" ", "")
-            task_str = match.group(2).strip()
-            # Normalize time to HH:MM AM/PM
-            try:
-                if ":" in raw_time:
-                    t = datetime.strptime(raw_time, "%I:%M%p")
-                else:
-                    t = datetime.strptime(raw_time, "%I%p")
-                normalized = t.strftime("%I:%M %p")
-                tasks.append({"time": normalized, "task": task_str})
-            except:
-                # fallback — try splitting manually
-                parts = line.split(" ", 3)
-                if len(parts) >= 3:
-                    tasks.append({"time": f"{parts[0]} {parts[1]}", "task": " ".join(parts[2:])})
-    return tasks
+INDIAN_ETFS = {
+    "Nifty BeES":       "NIFTYBEES.NS",
+    "Bank BeES":        "BANKBEES.NS",
+    "Gold BeES":        "GOLDBEES.NS",
+    "IT BeES":          "ITBEES.NS",
+    "PSU Bank BeES":    "PSUBNKBEES.NS",
+    "Midcap 150":       "MID150BEES.NS",
+    "Pharma BeES":      "PHARMABEES.NS",
+    "CPSE ETF":         "CPSEETF.NS",
+    "Bharat Bond 2030": "EBBETF0430.NS",
+    "Nifty Next 50":    "JUNIORBEES.NS",
+}
+
+INTL_ETFS = {
+    "SPDR S&P 500 (SPY)":     "SPY",
+    "Nasdaq 100 (QQQ)":       "QQQ",
+    "Emerging Markets (EEM)": "EEM",
+    "Vanguard EM (VWO)":      "VWO",
+    "ARK Innovation (ARKK)":  "ARKK",
+    "Gold ETF (GLD)":         "GLD",
+    "20yr Treasury (TLT)":    "TLT",
+    "Russell 2000 (IWM)":     "IWM",
+    "Dow Jones (DIA)":        "DIA",
+    "Financials (XLF)":       "XLF",
+}
+
+def fetch_etf_losers(symbols_dict):
+    results = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for name, symbol in symbols_dict.items():
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
+            res = requests.get(url, headers=headers, timeout=10).json()
+            meta     = res["chart"]["result"][0]["meta"]
+            price    = meta["regularMarketPrice"]
+            prev     = meta["previousClose"]
+            change   = round(price - prev, 2)
+            pct      = round((change / prev) * 100, 2)
+            currency = "₹" if ".NS" in symbol else "$"
+            results.append({"name": name, "symbol": symbol, "price": price,
+                            "change": change, "pct": pct, "currency": currency})
+        except Exception as e:
+            logger.error(f"ETF fetch error {name}: {e}")
+    results.sort(key=lambda x: x["pct"])
+    return results[:5]
+
+# ============================================================
+# ETF TELEGRAM MESSAGE
+# ============================================================
+async def send_etf_telegram(bot, chat_id, label=""):
+    try:
+        indian = fetch_etf_losers(INDIAN_ETFS)
+        intl   = fetch_etf_losers(INTL_ETFS)
+
+        indian_lines = "\n".join([
+            f"<b>{i}.</b> {e['name']}\n    🔴 {abs(e['pct'])}% &nbsp;|&nbsp; {e['currency']}{e['price']:,.2f}"
+            for i, e in enumerate(indian, 1)
+        ])
+        intl_lines = "\n".join([
+            f"<b>{i}.</b> {e['name']}\n    🔴 {abs(e['pct'])}% &nbsp;|&nbsp; {e['currency']}{e['price']:,.2f}"
+            for i, e in enumerate(intl, 1)
+        ])
+
+        await bot.send_message(
+            chat_id=chat_id,
+            parse_mode="HTML",
+            text=(
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📉 <b>TOP ETF LOSERS{' — ' + label if label else ''}</b>\n"
+                f"📅 {datetime.now().strftime('%d %b %Y')}\n"
+                f"━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🇮🇳 <b>Indian ETFs — Biggest Losers</b>\n\n"
+                f"{indian_lines}\n\n"
+                f"🌍 <b>International ETFs — Biggest Losers</b>\n\n"
+                f"{intl_lines}\n\n"
+                f"<i>Source: Yahoo Finance</i>"
+            )
+        )
+    except Exception as e:
+        logger.error(f"ETF Telegram error: {e}")
+
+# ============================================================
+# ETF EMAIL
+# ============================================================
+def build_email_html(indian, intl):
+    date = datetime.now().strftime("%d %b %Y")
+
+    def rows(etfs):
+        html = ""
+        for i, e in enumerate(etfs, 1):
+            bg = "#fff5f5" if i % 2 == 0 else "#ffffff"
+            html += f"""
+            <tr style="background:{bg}">
+                <td style="padding:10px;font-weight:500">{i}</td>
+                <td style="padding:10px"><b>{e['name']}</b><br>
+                    <span style="font-size:12px;color:#888">{e['symbol']}</span></td>
+                <td style="padding:10px;font-weight:500">{e['currency']}{e['price']:,.2f}</td>
+                <td style="padding:10px;color:#e74c3c;font-weight:600">▼ {abs(e['pct'])}%</td>
+                <td style="padding:10px;color:#e74c3c">{e['currency']}{abs(e['change']):,.2f}</td>
+            </tr>"""
+        return html
+
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+body{{font-family:Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px}}
+.container{{max-width:650px;margin:auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.1)}}
+.header{{background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:30px;text-align:center}}
+.header h1{{margin:0;font-size:22px}}
+.header p{{margin:8px 0 0;opacity:.8;font-size:14px}}
+.section{{padding:25px}}
+.section-title{{font-size:16px;font-weight:700;margin-bottom:15px;padding:10px 15px;border-radius:8px}}
+.indian{{background:#fff0f0;color:#c0392b;border-left:4px solid #e74c3c}}
+.intl{{background:#f0f4ff;color:#2c3e8c;border-left:4px solid #3498db}}
+table{{width:100%;border-collapse:collapse;font-size:14px}}
+th{{background:#f8f9fa;padding:10px;text-align:left;font-size:12px;color:#666;border-bottom:2px solid #eee}}
+.footer{{background:#f8f9fa;padding:20px;text-align:center;font-size:12px;color:#888;border-top:1px solid #eee}}
+</style></head><body>
+<div class="container">
+<div class="header">
+  <h1>📉 Daily ETF Losers Report</h1>
+  <p>📅 {date} &nbsp;|&nbsp; Top 5 Worst Performing ETFs</p>
+  <p>Good Morning, Amit Sir! Here's your ETF watchlist for today.</p>
+</div>
+<div class="section">
+  <div class="section-title indian">🇮🇳 Top 5 Indian ETFs — Biggest Losers Today</div>
+  <table><thead><tr>
+    <th>#</th><th>ETF Name</th><th>Price</th><th>Change %</th><th>Change ₹</th>
+  </tr></thead><tbody>{rows(indian)}</tbody></table>
+</div>
+<div class="section" style="padding-top:0">
+  <div class="section-title intl">🌍 Top 5 International ETFs — Biggest Losers Today</div>
+  <table><thead><tr>
+    <th>#</th><th>ETF Name</th><th>Price</th><th>Change %</th><th>Change $</th>
+  </tr></thead><tbody>{rows(intl)}</tbody></table>
+</div>
+<div class="footer">
+  <p>🤖 Powered by <b>AmitDailyUpdatesBot</b> &nbsp;|&nbsp; Sent automatically at 6:00 AM IST</p>
+  <p style="margin-top:5px;color:#aaa">Data from Yahoo Finance. For informational purposes only.</p>
+</div>
+</div></body></html>"""
+
+def send_etf_email():
+    try:
+        logger.info("Sending ETF email...")
+        indian = fetch_etf_losers(INDIAN_ETFS)
+        intl   = fetch_etf_losers(INTL_ETFS)
+        html   = build_email_html(indian, intl)
+        msg            = MIMEMultipart("alternative")
+        msg["Subject"] = f"📉 Daily ETF Losers Report — {datetime.now().strftime('%d %b %Y')}"
+        msg["From"]    = SENDER_EMAIL
+        msg["To"]      = ", ".join(RECIPIENTS)
+        msg.attach(MIMEText(html, "html"))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
+        logger.info("✅ ETF email sent!")
+    except Exception as e:
+        logger.error(f"Email error: {e}")
 
 # ============================================================
 # NEWS
@@ -79,12 +213,10 @@ def get_news(topic="India", count=10):
         articles = res.get("articles", [])
         if not articles:
             return "No news found right now."
-        lines = []
-        for i, a in enumerate(articles[:count], 1):
-            title  = a.get("title", "").strip()
-            source = a.get("source", {}).get("name", "")
-            lines.append(f"<b>{i}.</b> {title}\n    <i>— {source}</i>")
-        return "\n\n".join(lines)
+        return "\n\n".join([
+            f"<b>{i}.</b> {a['title']}\n    <i>— {a.get('source',{}).get('name','')}</i>"
+            for i, a in enumerate(articles[:count], 1)
+        ])
     except Exception as e:
         return f"Could not fetch news: {e}"
 
@@ -95,12 +227,10 @@ def get_tech_news(count=5):
         articles = res.get("articles", [])
         if not articles:
             return "No tech news found."
-        lines = []
-        for i, a in enumerate(articles[:count], 1):
-            title  = a.get("title", "").strip()
-            source = a.get("source", {}).get("name", "")
-            lines.append(f"<b>{i}.</b> {title}\n    <i>— {source}</i>")
-        return "\n\n".join(lines)
+        return "\n\n".join([
+            f"<b>{i}.</b> {a['title']}\n    <i>— {a.get('source',{}).get('name','')}</i>"
+            for i, a in enumerate(articles[:count], 1)
+        ])
     except Exception as e:
         return f"Could not fetch tech news: {e}"
 
@@ -111,35 +241,25 @@ def get_business_news(count=5):
         articles = res.get("articles", [])
         if not articles:
             return "No business news found."
-        lines = []
-        for i, a in enumerate(articles[:count], 1):
-            title  = a.get("title", "").strip()
-            source = a.get("source", {}).get("name", "")
-            lines.append(f"<b>{i}.</b> {title}\n    <i>— {source}</i>")
-        return "\n\n".join(lines)
+        return "\n\n".join([
+            f"<b>{i}.</b> {a['title']}\n    <i>— {a.get('source',{}).get('name','')}</i>"
+            for i, a in enumerate(articles[:count], 1)
+        ])
     except Exception as e:
         return f"Could not fetch business news: {e}"
 
-# ============================================================
-# GOLD & SILVER
-# ============================================================
 def get_gold_silver():
     try:
         url      = "https://api.coinbase.com/v2/exchange-rates?currency=XAU"
         res      = requests.get(url, timeout=10).json()
-        xau_inr  = float(res["data"]["rates"]["INR"])
-        gold_10g = round(xau_inr / 3.215, 2)
-        url2      = "https://api.coinbase.com/v2/exchange-rates?currency=XAG"
-        res2      = requests.get(url2, timeout=10).json()
-        xag_inr   = float(res2["data"]["rates"]["INR"])
-        silver_kg = round(xag_inr * 32.15, 2)
+        gold_10g = round(float(res["data"]["rates"]["INR"]) / 3.215, 2)
+        url2     = "https://api.coinbase.com/v2/exchange-rates?currency=XAG"
+        res2     = requests.get(url2, timeout=10).json()
+        silver_kg = round(float(res2["data"]["rates"]["INR"]) * 32.15, 2)
         return f"🥇 <b>Gold:</b> ₹{gold_10g:,} / 10g\n🥈 <b>Silver:</b> ₹{silver_kg:,} / kg"
     except Exception as e:
         return f"Could not fetch gold/silver: {e}"
 
-# ============================================================
-# MARKET
-# ============================================================
 def get_market():
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -149,96 +269,54 @@ def get_market():
         s_prev  = s["chart"]["result"][0]["meta"]["previousClose"]
         s_chg   = round(sensex - s_prev, 2)
         s_pct   = round((s_chg / s_prev) * 100, 2)
-        s_arrow = "▲" if s_chg >= 0 else "▼"
         nifty   = n["chart"]["result"][0]["meta"]["regularMarketPrice"]
         n_prev  = n["chart"]["result"][0]["meta"]["previousClose"]
         n_chg   = round(nifty - n_prev, 2)
         n_pct   = round((n_chg / n_prev) * 100, 2)
-        n_arrow = "▲" if n_chg >= 0 else "▼"
         return (
-            f"📊 <b>Sensex:</b> {sensex:,.2f} {s_arrow} {abs(s_chg)} ({abs(s_pct)}%)\n"
-            f"📈 <b>Nifty:</b>  {nifty:,.2f} {n_arrow} {abs(n_chg)} ({abs(n_pct)}%)"
+            f"📊 <b>Sensex:</b> {sensex:,.2f} {'▲' if s_chg>=0 else '▼'} {abs(s_chg)} ({abs(s_pct)}%)\n"
+            f"📈 <b>Nifty:</b>  {nifty:,.2f} {'▲' if n_chg>=0 else '▼'} {abs(n_chg)} ({abs(n_pct)}%)"
         )
     except Exception as e:
         return f"Could not fetch market data: {e}"
 
 # ============================================================
+# PARSE SCHEDULE
+# ============================================================
+def parse_schedule_text(text):
+    tasks   = []
+    pattern = re.compile(r'(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)|\d{1,2}\s*(?:AM|PM|am|pm))\s*[-–:]?\s*(.+)', re.IGNORECASE)
+    for line in text.strip().split("\n"):
+        line  = line.strip()
+        if not line: continue
+        match = pattern.search(line)
+        if match:
+            raw_time = match.group(1).strip().upper().replace(" ","")
+            task_str = match.group(2).strip()
+            try:
+                t = datetime.strptime(raw_time, "%I:%M%p") if ":" in raw_time else datetime.strptime(raw_time, "%I%p")
+                tasks.append({"time": t.strftime("%I:%M %p"), "task": task_str})
+            except:
+                parts = line.split(" ", 3)
+                if len(parts) >= 3:
+                    tasks.append({"time": f"{parts[0]} {parts[1]}", "task": " ".join(parts[2:])})
+    return tasks
+
+# ============================================================
 # SEND HELPERS
 # ============================================================
 _app = None
-
-def set_app(app):
-    global _app
-    _app = app
+def set_app(app): global _app; _app = app
 
 def send_message_sync(chat_id, text):
-    if _app is None:
-        return
+    if _app is None: return
     asyncio.run_coroutine_threadsafe(
-        _app.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML"),
-        _app.loop
-    )
+        _app.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML"), _app.loop)
 
 def send_to_all_sync(text):
-    users = load_json(USERS_FILE)
-    for chat_id in users:
-        try:
-            send_message_sync(chat_id, text)
-        except Exception as e:
-            logger.error(f"Failed to send to {chat_id}: {e}")
-
-# ============================================================
-# SAVE SCHEDULE & FIRE IMMEDIATE REMINDERS
-# ============================================================
-async def save_and_confirm_schedule(update, chat_id, tasks):
-    schedules  = load_json(SCHEDULE_FILE)
-    alerted    = load_json(ALERTED_FILE)
-    now        = datetime.now()
-    today_key  = now.strftime("%Y-%m-%d")
-
-    schedules[chat_id] = tasks
-    save_json(SCHEDULE_FILE, schedules)
-
-    lines_out   = []
-    remind_msgs = []
-
-    for t in tasks:
-        lines_out.append(f"✅ <b>{t['time']}</b> — {t['task']}")
-        try:
-            task_time = datetime.strptime(t["time"], "%I:%M %p").replace(
-                year=now.year, month=now.month, day=now.day
-            )
-            mins_left = (task_time - now).total_seconds() / 60
-            alert_key = f"{chat_id}_{today_key}_{t['time']}_{t['task']}"
-            if 0 < mins_left <= 30 and not alerted.get(alert_key):
-                remind_msgs.append((t, int(mins_left), alert_key))
-        except:
-            pass
-
-    await update.message.reply_text(
-        f"📅 <b>Schedule saved!</b>\n\n"
-        + "\n".join(lines_out)
-        + "\n\n⏰ I'll remind you when each task is within 30 minutes!\nHave a productive day! 💪",
-        parse_mode="HTML"
-    )
-
-    for t, mins_left, alert_key in remind_msgs:
-        await update.message.reply_text(
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ <b>IMMEDIATE REMINDER!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📌 <b>{t['task']}</b>\n"
-            f"🕐 At <b>{t['time']}</b>\n"
-            f"⏳ Only <b>{mins_left} minutes</b> away!",
-            parse_mode="HTML"
-        )
-        alerted[alert_key] = True
-
-    save_json(ALERTED_FILE, alerted)
-
-    waiting = load_json(WAITING_FILE)
-    waiting.pop(chat_id, None)
-    save_json(WAITING_FILE, waiting)
+    for chat_id in load_json(USERS_FILE):
+        try: send_message_sync(chat_id, text)
+        except Exception as e: logger.error(f"Send error: {e}")
 
 # ============================================================
 # MORNING BRIEFING
@@ -247,44 +325,35 @@ async def send_morning_briefing(bot, chat_id):
     name = load_json(USERS_FILE).get(str(chat_id), {}).get("name", "Sir")
     date = datetime.now().strftime('%d %b %Y')
 
-    news = get_news("India", 10)
+    # 1. News
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🌅 <b>Good Morning, {name}!</b>\n"
-        f"📅 {date}\n"
-        f"━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📰 <b>TOP 10 INDIA NEWS</b>\n\n{news}"
+        f"━━━━━━━━━━━━━━━━━━━\n🌅 <b>Good Morning, {name}!</b>\n📅 {date}\n━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📰 <b>TOP 10 INDIA NEWS</b>\n\n{get_news('India', 10)}"
     ))
 
+    # 2. Market
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💹 <b>MARKET & PRICES</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n💹 <b>MARKET & PRICES</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         f"{get_market()}\n\n{get_gold_silver()}"
     ))
 
-    tech = get_tech_news(5)
-    biz  = get_business_news(5)
+    # 3. Tech & Business
+    tech = get_tech_news(5); biz = get_business_news(5)
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💻 <b>TECH NEWS</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n\n{tech}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💼 <b>BUSINESS NEWS</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n\n{biz}"
+        f"━━━━━━━━━━━━━━━━━━━\n💻 <b>TECH NEWS</b>\n━━━━━━━━━━━━━━━━━━━\n\n{tech}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n💼 <b>BUSINESS NEWS</b>\n━━━━━━━━━━━━━━━━━━━\n\n{biz}"
     ))
 
+    # 4. ETF Losers
+    await send_etf_telegram(bot, chat_id, "Morning")
+
+    # 5. Schedule prompt
     await bot.send_message(chat_id=chat_id, parse_mode="HTML", text=(
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "📅 <b>TODAY'S SCHEDULE</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n📅 <b>TODAY'S SCHEDULE</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         "What's your schedule for today?\n\n"
         "<b>Option 1 — Type it:</b>\n"
-        "<code>9:00 AM Team meeting\n"
-        "2:00 PM Client call\n"
-        "5:00 PM Report submission</code>\n\n"
-        "<b>Option 2 — Upload a file:</b>\n"
-        "Send a <b>.txt</b> file with your schedule\n\n"
+        "<code>9:00 AM Team meeting\n2:00 PM Client call\n5:00 PM Report</code>\n\n"
+        "<b>Option 2 — Upload a .txt file</b>\n\n"
         "⏰ I'll remind you <b>30 minutes before</b> each task!\n"
         "Type <b>skip</b> if no schedule today."
     ))
@@ -297,14 +366,13 @@ async def send_morning_briefing(bot, chat_id):
 # SCHEDULED JOBS
 # ============================================================
 def job_morning():
-    users = load_json(USERS_FILE)
-    for chat_id in users:
+    for chat_id in load_json(USERS_FILE):
         try:
             asyncio.run_coroutine_threadsafe(
-                send_morning_briefing(_app.bot, int(chat_id)), _app.loop
-            )
+                send_morning_briefing(_app.bot, int(chat_id)), _app.loop)
         except Exception as e:
             logger.error(f"Morning job error: {e}")
+    send_etf_email()
 
 def job_market_open():
     send_to_all_sync(
@@ -313,30 +381,36 @@ def job_market_open():
     )
 
 def job_afternoon():
-    tech = get_tech_news(5)
-    biz  = get_business_news(5)
+    tech = get_tech_news(5); biz = get_business_news(5)
     send_to_all_sync(
         f"━━━━━━━━━━━━━━━━━━━\n☀️ <b>AFTERNOON UPDATE — 1:00 PM</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         f"💻 <b>Tech:</b>\n\n{tech}\n\n💼 <b>Business:</b>\n\n{biz}"
     )
 
 def job_market_close():
+    # Market close message
     send_to_all_sync(
         f"━━━━━━━━━━━━━━━━━━━\n🔔 <b>MARKET CLOSED — 3:30 PM</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
         f"{get_market()}\n\n{get_gold_silver()}"
     )
+    # ETF losers at close
+    for chat_id in load_json(USERS_FILE):
+        try:
+            asyncio.run_coroutine_threadsafe(
+                send_etf_telegram(_app.bot, int(chat_id), "Market Close"), _app.loop)
+        except Exception as e:
+            logger.error(f"ETF close error: {e}")
 
 def job_evening_news():
-    news = get_news("world", 10)
     send_to_all_sync(
         f"━━━━━━━━━━━━━━━━━━━\n🌍 <b>EVENING WORLD NEWS</b>\n"
-        f"📅 {datetime.now().strftime('%d %b %Y')}\n━━━━━━━━━━━━━━━━━━━\n\n{news}"
+        f"📅 {datetime.now().strftime('%d %b %Y')}\n━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{get_news('world', 10)}"
     )
 
 def job_price_alerts():
     try:
-        gs     = get_gold_silver()
-        market = get_market()
+        gs = get_gold_silver(); market = get_market()
         raw_gs = gs.replace("<b>","").replace("</b>","")
         raw_mk = market.replace("<b>","").replace("</b>","")
         gold_val   = float(raw_gs.split("\n")[0].split("₹")[1].split(" ")[0].replace(",",""))
@@ -349,45 +423,62 @@ def job_price_alerts():
         if alerts:
             send_to_all_sync(
                 f"━━━━━━━━━━━━━━━━━━━\n⚡ <b>PRICE ALERT!</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
-                + "\n\n".join(alerts)
-            )
+                + "\n\n".join(alerts))
     except Exception as e:
         logger.error(f"Alert error: {e}")
 
 def job_reminders():
-    schedules = load_json(SCHEDULE_FILE)
-    alerted   = load_json(ALERTED_FILE)
-    now       = datetime.now()
-    today_key = now.strftime("%Y-%m-%d")
-    changed   = False
+    schedules = load_json(SCHEDULE_FILE); alerted = load_json(ALERTED_FILE)
+    now = datetime.now(); today_key = now.strftime("%Y-%m-%d"); changed = False
     for chat_id, tasks in schedules.items():
         for task in tasks:
             try:
                 task_time = datetime.strptime(task["time"], "%I:%M %p").replace(
-                    year=now.year, month=now.month, day=now.day
-                )
+                    year=now.year, month=now.month, day=now.day)
                 alert_key = f"{chat_id}_{today_key}_{task['time']}_{task['task']}"
-                if alerted.get(alert_key):
-                    continue
-                if now >= task_time:
-                    continue
+                if alerted.get(alert_key) or now >= task_time: continue
                 mins_left = (task_time - now).total_seconds() / 60
                 if mins_left <= 30:
                     send_message_sync(chat_id,
                         f"━━━━━━━━━━━━━━━━━━━\n⏰ <b>REMINDER!</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📌 <b>{task['task']}</b>\n"
-                        f"🕐 At <b>{task['time']}</b>\n"
-                        f"⏳ In <b>{int(mins_left)} minutes</b>"
-                    )
-                    alerted[alert_key] = True
-                    changed = True
+                        f"📌 <b>{task['task']}</b>\n🕐 At <b>{task['time']}</b>\n⏳ In <b>{int(mins_left)} minutes</b>")
+                    alerted[alert_key] = True; changed = True
             except Exception as e:
                 logger.error(f"Reminder error: {e}")
-    if changed:
-        save_json(ALERTED_FILE, alerted)
+    if changed: save_json(ALERTED_FILE, alerted)
 
 # ============================================================
-# START
+# SAVE SCHEDULE
+# ============================================================
+async def save_and_confirm_schedule(update, chat_id, tasks):
+    schedules = load_json(SCHEDULE_FILE); alerted = load_json(ALERTED_FILE)
+    now = datetime.now(); today_key = now.strftime("%Y-%m-%d")
+    schedules[chat_id] = tasks; save_json(SCHEDULE_FILE, schedules)
+    lines_out = []; remind_msgs = []
+    for t in tasks:
+        lines_out.append(f"✅ <b>{t['time']}</b> — {t['task']}")
+        try:
+            task_time = datetime.strptime(t["time"], "%I:%M %p").replace(year=now.year, month=now.month, day=now.day)
+            mins_left = (task_time - now).total_seconds() / 60
+            alert_key = f"{chat_id}_{today_key}_{t['time']}_{t['task']}"
+            if 0 < mins_left <= 30 and not alerted.get(alert_key):
+                remind_msgs.append((t, int(mins_left), alert_key))
+        except: pass
+    await update.message.reply_text(
+        f"📅 <b>Schedule saved!</b>\n\n" + "\n".join(lines_out) +
+        "\n\n⏰ I'll remind you when each task is within 30 minutes!\nHave a productive day! 💪",
+        parse_mode="HTML")
+    for t, mins_left, alert_key in remind_msgs:
+        await update.message.reply_text(
+            f"━━━━━━━━━━━━━━━━━━━\n⚡ <b>IMMEDIATE REMINDER!</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📌 <b>{t['task']}</b>\n🕐 At <b>{t['time']}</b>\n⏳ Only <b>{mins_left} minutes</b> away!",
+            parse_mode="HTML")
+        alerted[alert_key] = True
+    save_json(ALERTED_FILE, alerted)
+    waiting = load_json(WAITING_FILE); waiting.pop(chat_id, None); save_json(WAITING_FILE, waiting)
+
+# ============================================================
+# COMMANDS
 # ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -397,134 +488,78 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_json(USERS_FILE, users)
     await update.message.reply_text(
         f"👋 <b>Welcome, {name}!</b>\n\nFetching your complete briefing now...",
-        parse_mode="HTML"
-    )
+        parse_mode="HTML")
     await send_morning_briefing(context.bot, int(chat_id))
 
-# ============================================================
-# COMMANDS
-# ============================================================
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    waiting = load_json(WAITING_FILE)
-    waiting[chat_id] = True
-    save_json(WAITING_FILE, waiting)
+    waiting = load_json(WAITING_FILE); waiting[chat_id] = True; save_json(WAITING_FILE, waiting)
     await update.message.reply_text(
-        "📅 <b>Set your schedule</b>\n\n"
-        "<b>Option 1 — Type it:</b>\n"
+        "📅 <b>Set your schedule</b>\n\n<b>Option 1 — Type it:</b>\n"
         "<code>9:00 AM Team meeting\n2:00 PM Client call\n5:00 PM Report</code>\n\n"
-        "<b>Option 2 — Upload a .txt file</b>\n"
-        "Same format inside the file\n\n"
-        "⏰ I'll remind you within <b>30 minutes</b> of each task!",
-        parse_mode="HTML"
-    )
+        "<b>Option 2 — Upload a .txt file</b>\n\n⏰ I'll remind you within <b>30 minutes</b>!",
+        parse_mode="HTML")
 
 async def cmd_view_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id   = str(update.effective_chat.id)
-    schedules = load_json(SCHEDULE_FILE)
-    tasks     = schedules.get(chat_id, [])
+    chat_id = str(update.effective_chat.id)
+    tasks   = load_json(SCHEDULE_FILE).get(chat_id, [])
     if not tasks:
-        await update.message.reply_text("No schedule saved. Use /schedule to set one.")
-        return
-    lines = [f"⏰ <b>{t['time']}</b> — {t['task']}" for t in tasks]
+        await update.message.reply_text("No schedule saved. Use /schedule to set one."); return
     await update.message.reply_text(
-        f"📅 <b>Your Schedule Today</b>\n\n" + "\n".join(lines),
-        parse_mode="HTML"
-    )
+        f"📅 <b>Your Schedule Today</b>\n\n" +
+        "\n".join([f"⏰ <b>{t['time']}</b> — {t['task']}" for t in tasks]),
+        parse_mode="HTML")
 
 async def cmd_clear_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id   = str(update.effective_chat.id)
-    schedules = load_json(SCHEDULE_FILE)
-    alerted   = load_json(ALERTED_FILE)
-    schedules.pop(chat_id, None)
-    save_json(SCHEDULE_FILE, schedules)
+    schedules = load_json(SCHEDULE_FILE); alerted = load_json(ALERTED_FILE)
+    schedules.pop(chat_id, None); save_json(SCHEDULE_FILE, schedules)
     today_key = datetime.now().strftime("%Y-%m-%d")
-    for k in [k for k in alerted if k.startswith(f"{chat_id}_{today_key}")]:
-        alerted.pop(k, None)
+    for k in [k for k in alerted if k.startswith(f"{chat_id}_{today_key}")]: alerted.pop(k, None)
     save_json(ALERTED_FILE, alerted)
     await update.message.reply_text("✅ Schedule cleared!")
 
-# ============================================================
-# TEXT MESSAGE HANDLER
-# ============================================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     text    = update.message.text.strip()
     waiting = load_json(WAITING_FILE)
-
     if waiting.get(chat_id):
         if text.lower() == "skip":
-            waiting.pop(chat_id, None)
-            save_json(WAITING_FILE, waiting)
-            await update.message.reply_text("✅ No problem! See you tomorrow at 6 AM. Have a great day! 😊")
-            return
-
+            waiting.pop(chat_id, None); save_json(WAITING_FILE, waiting)
+            await update.message.reply_text("✅ No problem! See you tomorrow at 6 AM. Have a great day! 😊"); return
         tasks = parse_schedule_text(text)
         if tasks:
             await save_and_confirm_schedule(update, chat_id, tasks)
         else:
             await update.message.reply_text(
-                "Could not read your schedule. Please use:\n\n"
+                "Could not read schedule. Use:\n\n"
                 "<code>9:00 AM Team meeting\n2:00 PM Client call</code>\n\n"
-                "Or upload a <b>.txt file</b> with same format.\n"
-                "Or type <b>skip</b> to skip today.",
-                parse_mode="HTML"
-            )
+                "Or type <b>skip</b>.", parse_mode="HTML")
         return
-
     await update.message.reply_text(
         "I send updates automatically every day at 6 AM! 😊\n\n"
-        "Use /schedule to set today's reminders.\n"
-        "Use /viewschedule to see your schedule."
-    )
+        "Use /schedule to set today's reminders.")
 
-# ============================================================
-# FILE UPLOAD HANDLER — .txt files
-# ============================================================
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id  = str(update.effective_chat.id)
     document = update.message.document
-
-    if not document:
-        return
-
-    file_name = document.file_name or ""
-
-    # Only accept .txt files
-    if not file_name.endswith(".txt"):
-        await update.message.reply_text(
-            "⚠️ Please upload a <b>.txt</b> file only.\n\n"
-            "Create a text file with your schedule like:\n"
-            "<code>9:00 AM Team meeting\n2:00 PM Client call\n5:00 PM Report</code>",
-            parse_mode="HTML"
-        )
-        return
-
+    if not document: return
+    if not (document.file_name or "").endswith(".txt"):
+        await update.message.reply_text("⚠️ Please upload a <b>.txt</b> file only.", parse_mode="HTML"); return
     await update.message.reply_text("📂 Reading your schedule file...")
-
     try:
-        file = await context.bot.get_file(document.file_id)
+        file    = await context.bot.get_file(document.file_id)
         content = await file.download_as_bytearray()
-        text = content.decode("utf-8", errors="ignore")
-
-        tasks = parse_schedule_text(text)
-
+        text    = content.decode("utf-8", errors="ignore")
+        tasks   = parse_schedule_text(text)
         if tasks:
-            # Mark as waiting so save_and_confirm works
-            waiting = load_json(WAITING_FILE)
-            waiting[chat_id] = True
-            save_json(WAITING_FILE, waiting)
+            waiting = load_json(WAITING_FILE); waiting[chat_id] = True; save_json(WAITING_FILE, waiting)
             await save_and_confirm_schedule(update, chat_id, tasks)
         else:
             await update.message.reply_text(
-                "⚠️ Could not read tasks from your file.\n\n"
-                "Make sure the file contains:\n"
-                "<code>9:00 AM Team meeting\n2:00 PM Client call</code>",
-                parse_mode="HTML"
-            )
+                "⚠️ Could not read tasks. Format:\n<code>9:00 AM Meeting</code>", parse_mode="HTML")
     except Exception as e:
-        logger.error(f"File read error: {e}")
-        await update.message.reply_text(f"❌ Error reading file: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
 
 # ============================================================
 # MAIN
@@ -532,7 +567,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     set_app(app)
-
     app.add_handler(CommandHandler("start",         start))
     app.add_handler(CommandHandler("schedule",      cmd_schedule))
     app.add_handler(CommandHandler("viewschedule",  cmd_view_schedule))
