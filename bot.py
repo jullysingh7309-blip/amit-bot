@@ -445,8 +445,11 @@ def send_message_sync(chat_id, text):
         _app.bot.send_message(chat_id=int(chat_id), text=text, parse_mode="HTML"), _app.loop)
 
 def send_to_all_sync(text):
+    import time
     for chat_id in load_json(USERS_FILE):
-        try: send_message_sync(chat_id, text)
+        try:
+            send_message_sync(chat_id, text)
+            time.sleep(0.5)
         except Exception as e: logger.error(f"Send error: {e}")
 
 # ============================================================
@@ -682,7 +685,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ============================================================
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).connect_timeout(30).read_timeout(30).write_timeout(30).build()
     set_app(app)
     app.add_handler(CommandHandler("start",         start))
     app.add_handler(CommandHandler("schedule",      cmd_schedule))
@@ -845,20 +848,21 @@ def job_realtime_news():
                 new_articles.append(article)
                 sent_news[news_hash] = True
 
-                # Send Telegram alert immediately
-                msg = (
-                    f"🔴 <b>BREAKING NEWS ALERT!</b>\n"
-                    f"🔍 Keyword: <b>{keyword}</b>\n\n"
-                    f"<b>{article['title']}</b>\n\n"
-                    f"<i>— {article['source']}</i>\n\n"
-                    f"<a href='{article['link']}'>Read full article →</a>"
-                )
-                send_to_all_sync(msg)
+                # Send Telegram alert — only first article per keyword
+                if len([a for a in new_articles if a['keyword'] == keyword]) == 1:
+                    msg = (
+                        f"🔴 <b>BREAKING NEWS ALERT!</b>\n"
+                        f"🔍 Keyword: <b>{keyword}</b>\n\n"
+                        f"<b>{article['title']}</b>\n\n"
+                        f"<i>— {article['source']}</i>\n\n"
+                        f"<a href='{article['link']}'>Read full article →</a>"
+                    )
+                    send_to_all_sync(msg)
 
     if new_articles:
         save_sent_news(sent_news)
-        # Send one combined email for all new articles
-        send_news_alert_email(new_articles)
+        # Limit to 3 articles max per run to avoid spam
+        send_news_alert_email(new_articles[:3])
 
     # Clean old entries — keep only last 1000 to prevent file bloat
     if len(sent_news) > 1000:
