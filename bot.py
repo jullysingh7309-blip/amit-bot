@@ -708,7 +708,7 @@ NEWS_KEYWORDS = [
     "emerging markets ETF",
 ]
 
-SENT_NEWS_FILE = "sent_news.json"
+SENT_NEWS_FILE = "/tmp/sent_news.json"
 
 def load_sent_news():
     if os.path.exists(SENT_NEWS_FILE):
@@ -855,7 +855,7 @@ def main():
     scheduler.add_job(job_price_alerts, "interval", minutes=5)
     scheduler.add_job(job_etf_alerts,   "interval", minutes=5)
     scheduler.add_job(job_reminders,    "interval", minutes=1)
-    scheduler.add_job(job_realtime_news, 'interval', minutes=5)
+    scheduler.add_job(job_realtime_news, 'interval', minutes=60)
     scheduler.start()
 
     logger.info("✅ Bot is running!")
