@@ -730,18 +730,24 @@ import hashlib
 
 # Keywords to monitor — add or remove as needed
 NEWS_KEYWORDS = [
-    "NSE block deal",
-    "RBI repo rate",
-    "ETF India",
-    "Sensex crash",
-    "Nifty fall",
+    "Sensex crash India",
+    "Nifty fall India",
+    "RBI rate cut India",
     "gold price India",
-    "real estate India",
-    "home loan rate",
-    "RERA India",
-    "property prices Noida",
+    "NSE India stocks",
     "stock market crash India",
-    "mutual fund India",
+    "Nifty BeES ETF",
+    "Bank BeES ETF",
+    "PSU Bank BeES ETF",
+    "Pharma BeES ETF",
+    "IT BeES ETF",
+    "CPSE ETF India",
+    "Gold BeES ETF India",
+    "Midcap 150 ETF India",
+    "ARKK ETF crash",
+    "SPY ETF fall",
+    "QQQ ETF drop",
+    "emerging markets ETF",
 ]
 
 SENT_NEWS_FILE = "sent_news.json"
@@ -852,16 +858,7 @@ def job_realtime_news():
                 new_articles.append(article)
                 sent_news[news_hash] = True
 
-                # Send Telegram alert — only first article per keyword
-                if len([a for a in new_articles if a['keyword'] == keyword]) == 1:
-                    msg = (
-                        f"🔴 <b>BREAKING NEWS ALERT!</b>\n"
-                        f"🔍 Keyword: <b>{keyword}</b>\n\n"
-                        f"<b>{article['title']}</b>\n\n"
-                        f"<i>— {article['source']}</i>\n\n"
-                        f"<a href='{article['link']}'>Read full article →</a>"
-                    )
-                    send_to_all_sync(msg)
+                # Email only — no Telegram for news alerts
 
     logger.info(f"📊 Total new articles found: {len(new_articles)}")
     if new_articles:
