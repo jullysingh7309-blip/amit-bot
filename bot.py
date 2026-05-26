@@ -703,6 +703,17 @@ def main():
     scheduler.start()
 
     logger.info("✅ Bot is running!")
+
+    # Fire news alert immediately on startup
+    import threading
+    def startup_news():
+        import time
+        time.sleep(5)  # wait 5 seconds for bot to fully start
+        logger.info("🔥 Firing startup news alert...")
+        job_realtime_news()
+        logger.info("✅ Startup news alert fired!")
+    threading.Thread(target=startup_news, daemon=True).start()
+
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
