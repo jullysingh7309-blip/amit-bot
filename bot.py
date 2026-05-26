@@ -682,47 +682,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
 # ============================================================
-# MAIN
-# ============================================================
-def main():
-    app = Application.builder().token(BOT_TOKEN).connect_timeout(30).read_timeout(30).write_timeout(30).build()
-    set_app(app)
-    app.add_handler(CommandHandler("start",         start))
-    app.add_handler(CommandHandler("schedule",      cmd_schedule))
-    app.add_handler(CommandHandler("viewschedule",  cmd_view_schedule))
-    app.add_handler(CommandHandler("clearschedule", cmd_clear_schedule))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
-    scheduler.add_job(job_morning,      "cron",     hour=6,  minute=0)
-    scheduler.add_job(job_market_open,  "cron",     hour=9,  minute=15)
-    scheduler.add_job(job_afternoon,    "cron",     hour=13, minute=0)
-    scheduler.add_job(job_market_close, "cron",     hour=15, minute=30)
-    scheduler.add_job(job_evening_news, "cron",     hour=19, minute=0)
-    scheduler.add_job(job_price_alerts, "interval", minutes=5)
-    scheduler.add_job(job_etf_alerts,   "interval", minutes=5)
-    scheduler.add_job(job_reminders,    "interval", minutes=1)
-    scheduler.start()
-
-    logger.info("✅ Bot is running!")
-
-    # Fire news alert immediately on startup
-    import threading
-    def startup_news():
-        import time
-        time.sleep(5)  # wait 5 seconds for bot to fully start
-        logger.info("🔥 Firing startup news alert...")
-        job_realtime_news()
-        logger.info("✅ Startup news alert fired!")
-    threading.Thread(target=startup_news, daemon=True).start()
-
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
-
-# ============================================================
 # REAL-TIME NEWS ALERTS — Google News RSS every 10 seconds
 # ============================================================
 import hashlib
@@ -872,3 +831,46 @@ def job_realtime_news():
         keys = list(sent_news.keys())
         trimmed = {k: sent_news[k] for k in keys[-1000:]}
         save_sent_news(trimmed)
+
+# ============================================================
+# MAIN
+# ============================================================
+def main():
+    app = Application.builder().token(BOT_TOKEN).connect_timeout(30).read_timeout(30).write_timeout(30).build()
+    set_app(app)
+    app.add_handler(CommandHandler("start",         start))
+    app.add_handler(CommandHandler("schedule",      cmd_schedule))
+    app.add_handler(CommandHandler("viewschedule",  cmd_view_schedule))
+    app.add_handler(CommandHandler("clearschedule", cmd_clear_schedule))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
+    scheduler.add_job(job_morning,      "cron",     hour=6,  minute=0)
+    scheduler.add_job(job_market_open,  "cron",     hour=9,  minute=15)
+    scheduler.add_job(job_afternoon,    "cron",     hour=13, minute=0)
+    scheduler.add_job(job_market_close, "cron",     hour=15, minute=30)
+    scheduler.add_job(job_evening_news, "cron",     hour=19, minute=0)
+    scheduler.add_job(job_price_alerts, "interval", minutes=5)
+    scheduler.add_job(job_etf_alerts,   "interval", minutes=5)
+    scheduler.add_job(job_reminders,    "interval", minutes=1)
+    scheduler.add_job(job_realtime_news, 'interval', minutes=5)
+    scheduler.add_job(job_realtime_news, 'interval', minutes=5)
+    scheduler.start()
+
+    logger.info("✅ Bot is running!")
+
+    # Fire news alert immediately on startup
+    import threading
+    def startup_news():
+        import time
+        time.sleep(5)  # wait 5 seconds for bot to fully start
+        logger.info("🔥 Firing startup news alert...")
+        job_realtime_news()
+        logger.info("✅ Startup news alert fired!")
+    threading.Thread(target=startup_news, daemon=True).start()
+
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
