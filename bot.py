@@ -804,7 +804,7 @@ table{{width:100%;border-collapse:collapse}}
 
 def job_realtime_news():
     logger.info("🔥 NEWS JOB RUNNING NOW")
-    sent_news = {}  # TEST MODE
+    sent_news = load_sent_news()
     new_articles = []
 
     for keyword in NEWS_KEYWORDS:
@@ -823,7 +823,7 @@ def job_realtime_news():
     if new_articles:
         save_sent_news(sent_news)
         logger.info(f"📧 Sending email for {len(new_articles[:3])} articles...")
-        send_news_alert_email(new_articles[:3])
+        send_news_alert_email(new_articles)
     else:
         logger.info("⚠️ No new articles found this run")
 
@@ -856,20 +856,9 @@ def main():
     scheduler.add_job(job_etf_alerts,   "interval", minutes=5)
     scheduler.add_job(job_reminders,    "interval", minutes=1)
     scheduler.add_job(job_realtime_news, 'interval', minutes=5)
-    scheduler.add_job(job_realtime_news, 'interval', minutes=5)
     scheduler.start()
 
     logger.info("✅ Bot is running!")
-
-    # Fire news alert immediately on startup
-    import threading
-    def startup_news():
-        import time
-        time.sleep(5)  # wait 5 seconds for bot to fully start
-        logger.info("🔥 Firing startup news alert...")
-        job_realtime_news()
-        logger.info("✅ Startup news alert fired!")
-    threading.Thread(target=startup_news, daemon=True).start()
 
     app.run_polling(drop_pending_updates=True)
 
