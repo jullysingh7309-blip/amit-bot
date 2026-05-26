@@ -12,7 +12,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import asyncio
 import hashlib
-from xml.etree import ElementTree as ET
 
 # ============================================================
 # CONFIG
@@ -713,7 +712,6 @@ if __name__ == "__main__":
 # REAL-TIME NEWS ALERTS — Google News RSS every 10 seconds
 # ============================================================
 import hashlib
-from xml.etree import ElementTree as ET
 
 # Keywords to monitor — add or remove as needed
 NEWS_KEYWORDS = [
@@ -748,31 +746,21 @@ def get_news_hash(title, link):
 
 def fetch_google_news_rss(keyword):
     try:
-        query   = keyword.replace(" ", "+")
-        url     = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res     = requests.get(url, headers=headers, timeout=10)
-        root    = ET.fromstring(res.content)
-        channel = root.find("channel")
-        articles = []
-        if channel is None:
-            return []
-        for item in channel.findall("item")[:5]:
-            title     = item.findtext("title", "")
-            link      = item.findtext("link", "")
-            published = item.findtext("pubDate", "")
-            source_el = item.find("source")
-            source    = source_el.text if source_el is not None else "Google News"
-            articles.append({
-                "title":     title,
-                "link":      link,
-                "published": published,
-                "source":    source,
+        url = f"https://gnews.io/api/v4/search?q={requests.utils.quote(keyword)}&lang=en&max=5&apikey={GNEWS_API_KEY}"
+        res = requests.get(url, timeout=10).json()
+        articles = res.get("articles", [])
+        result = []
+        for a in articles:
+            result.append({
+                "title":     a.get("title", ""),
+                "link":      a.get("url", ""),
+                "published": a.get("publishedAt", ""),
+                "source":    a.get("source", {}).get("name", "GNews"),
                 "keyword":   keyword
             })
-        return articles
+        return result
     except Exception as e:
-        logger.error(f"RSS fetch error for {keyword}: {e}")
+        logger.error(f"News fetch error for {keyword}: {e}")
         return []
 
 def send_news_alert_email(articles):
