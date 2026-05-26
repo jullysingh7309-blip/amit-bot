@@ -11,6 +11,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import asyncio
+import feedparser
+import hashlib
 
 # ============================================================
 # CONFIG
@@ -706,3 +708,149 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ============================================================
+# REAL-TIME NEWS ALERTS — Google News RSS every 10 seconds
+# ============================================================
+import feedparser
+import hashlib
+
+# Keywords to monitor — add or remove as needed
+NEWS_KEYWORDS = [
+    "NSE block deal",
+    "RBI repo rate",
+    "ETF India",
+    "Sensex crash",
+    "Nifty fall",
+    "gold price India",
+    "real estate India",
+    "home loan rate",
+    "RERA India",
+    "property prices Noida",
+    "stock market crash India",
+    "mutual fund India",
+]
+
+SENT_NEWS_FILE = "sent_news.json"
+
+def load_sent_news():
+    if os.path.exists(SENT_NEWS_FILE):
+        with open(SENT_NEWS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_sent_news(data):
+    with open(SENT_NEWS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def get_news_hash(title, link):
+    return hashlib.md5(f"{title}{link}".encode()).hexdigest()
+
+def fetch_google_news_rss(keyword):
+    try:
+        query   = keyword.replace(" ", "+")
+        url     = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+        feed    = feedparser.parse(url)
+        articles = []
+        for entry in feed.entries[:5]:
+            articles.append({
+                "title":     entry.get("title", ""),
+                "link":      entry.get("link", ""),
+                "published": entry.get("published", ""),
+                "source":    entry.get("source", {}).get("title", "Google News"),
+                "keyword":   keyword
+            })
+        return articles
+    except Exception as e:
+        logger.error(f"RSS fetch error for {keyword}: {e}")
+        return []
+
+def send_news_alert_email(articles):
+    try:
+        date = datetime.now().strftime("%d %b %Y %I:%M %p")
+
+        def rows():
+            html = ""
+            for a in articles:
+                html += f"""
+                <tr>
+                    <td style="padding:12px 10px;border-bottom:0.5px solid #eee">
+                        <b style="color:#1a1a2e;font-size:13px">{a['title']}</b><br>
+                        <span style="font-size:11px;color:#888">{a['source']} · {a['published'][:20] if a['published'] else ''}</span><br>
+                        <span style="font-size:11px;background:#fff0f0;color:#c0392b;padding:2px 8px;border-radius:4px;display:inline-block;margin-top:4px">🔍 Keyword: {a['keyword']}</span><br>
+                        <a href="{a['link']}" style="font-size:12px;color:#3498db;margin-top:4px;display:inline-block">Read full article →</a>
+                    </td>
+                </tr>"""
+            return html
+
+        html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+body{{font-family:Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px}}
+.container{{max-width:650px;margin:auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.1)}}
+.header{{background:linear-gradient(135deg,#c0392b,#e74c3c);color:white;padding:25px;text-align:center}}
+.header h1{{margin:0;font-size:20px}}
+.header p{{margin:6px 0 0;opacity:.85;font-size:13px}}
+.section{{padding:20px}}
+table{{width:100%;border-collapse:collapse}}
+.footer{{background:#f8f9fa;padding:16px;text-align:center;font-size:11px;color:#888;border-top:1px solid #eee}}
+</style></head><body>
+<div class="container">
+<div class="header">
+  <h1>🔴 Breaking News Alert</h1>
+  <p>⏰ {date} IST · Real-time keyword match detected</p>
+</div>
+<div class="section">
+  <table><tbody>{rows()}</tbody></table>
+</div>
+<div class="footer">
+  <p>🤖 <b>AmitDailyUpdatesBot</b> · Real-time news monitoring · Checks every 10 seconds</p>
+</div>
+</div></body></html>"""
+
+        msg            = MIMEMultipart("alternative")
+        msg["Subject"] = f"🔴 Breaking News Alert — {articles[0]['keyword']} — {datetime.now().strftime('%d %b %Y %I:%M %p')}"
+        msg["From"]    = SENDER_EMAIL
+        msg["To"]      = ", ".join(RECIPIENTS)
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
+
+        logger.info(f"✅ News alert email sent for: {articles[0]['keyword']}")
+    except Exception as e:
+        logger.error(f"News alert email error: {e}")
+
+def job_realtime_news():
+    sent_news = load_sent_news()
+    new_articles = []
+
+    for keyword in NEWS_KEYWORDS:
+        articles = fetch_google_news_rss(keyword)
+        for article in articles:
+            news_hash = get_news_hash(article["title"], article["link"])
+            if not sent_news.get(news_hash):
+                new_articles.append(article)
+                sent_news[news_hash] = True
+
+                # Send Telegram alert immediately
+                msg = (
+                    f"🔴 <b>BREAKING NEWS ALERT!</b>\n"
+                    f"🔍 Keyword: <b>{keyword}</b>\n\n"
+                    f"<b>{article['title']}</b>\n\n"
+                    f"<i>— {article['source']}</i>\n\n"
+                    f"<a href='{article['link']}'>Read full article →</a>"
+                )
+                send_to_all_sync(msg)
+
+    if new_articles:
+        save_sent_news(sent_news)
+        # Send one combined email for all new articles
+        send_news_alert_email(new_articles)
+
+    # Clean old entries — keep only last 1000 to prevent file bloat
+    if len(sent_news) > 1000:
+        keys = list(sent_news.keys())
+        trimmed = {k: sent_news[k] for k in keys[-1000:]}
+        save_sent_news(trimmed)
