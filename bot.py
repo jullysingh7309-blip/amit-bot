@@ -832,16 +832,18 @@ table{{width:100%;border-collapse:collapse}}
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
 
-        logger.info(f"✅ News alert email sent for: {articles[0]['keyword']}")
+        logger.info(f"✅ NEWS ALERT EMAIL SENT to {RECIPIENTS} for: {articles[0]['keyword']}")
     except Exception as e:
         logger.error(f"News alert email error: {e}")
 
 def job_realtime_news():
     sent_news = {}  # TEST MODE
     new_articles = []
+    logger.info(f"🔍 Starting news check for {len(NEWS_KEYWORDS)} keywords...")
 
     for keyword in NEWS_KEYWORDS:
         articles = fetch_google_news_rss(keyword)
+        logger.info(f"  Keyword '{keyword}': {len(articles)} articles found")
         for article in articles:
             news_hash = get_news_hash(article["title"], article["link"])
             if not sent_news.get(news_hash):
