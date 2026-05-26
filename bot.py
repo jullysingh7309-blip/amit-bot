@@ -792,14 +792,15 @@ table{{width:100%;border-collapse:collapse}}
         msg["To"]      = ", ".join(RECIPIENTS)
         msg.attach(MIMEText(html, "html"))
 
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
 
-        logger.info(f"✅ EMAIL SENT to both addresses for: {articles[0]['keyword']}")
+        logger.info(f"✅ NEWS EMAIL SENT to both addresses for: {articles[0]['keyword']}")
     except Exception as e:
-        logger.error(f"News alert email error: {e}")
+        logger.error(f"❌ NEWS EMAIL ERROR: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 def job_realtime_news():
     logger.info("🔥 NEWS JOB RUNNING NOW")
