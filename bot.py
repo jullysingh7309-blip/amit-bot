@@ -746,16 +746,18 @@ def get_news_hash(title, link):
 
 def fetch_google_news_rss(keyword):
     try:
-        url = f"https://gnews.io/api/v4/search?q={requests.utils.quote(keyword)}&lang=en&max=5&apikey={GNEWS_API_KEY}"
-        res = requests.get(url, timeout=10).json()
-        articles = res.get("articles", [])
-        result = []
-        for a in articles:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        query   = requests.utils.quote(keyword)
+        url     = f"https://query1.finance.yahoo.com/v1/finance/search?q={query}&newsCount=5&enableFuzzyQuery=false"
+        res     = requests.get(url, headers=headers, timeout=10).json()
+        news    = res.get("news", [])
+        result  = []
+        for a in news:
             result.append({
                 "title":     a.get("title", ""),
-                "link":      a.get("url", ""),
-                "published": a.get("publishedAt", ""),
-                "source":    a.get("source", {}).get("name", "GNews"),
+                "link":      a.get("link", ""),
+                "published": str(a.get("providerPublishTime", "")),
+                "source":    a.get("publisher", "Yahoo Finance"),
                 "keyword":   keyword
             })
         return result
@@ -821,7 +823,7 @@ table{{width:100%;border-collapse:collapse}}
         logger.error(f"News alert email error: {e}")
 
 def job_realtime_news():
-    sent_news = load_sent_news()
+    sent_news = {}  # TEST MODE
     new_articles = []
 
     for keyword in NEWS_KEYWORDS:
