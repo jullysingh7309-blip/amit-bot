@@ -725,20 +725,25 @@ def get_news_hash(title, link):
 
 def fetch_google_news_rss(keyword):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-        query   = requests.utils.quote(keyword)
-        url     = f"https://query1.finance.yahoo.com/v1/finance/search?q={query}&newsCount=5&enableFuzzyQuery=false"
-        res     = requests.get(url, headers=headers, timeout=10).json()
-        news    = res.get("news", [])
-        result  = []
-        for a in news:
-            result.append({
-                "title":     a.get("title", ""),
-                "link":      a.get("link", ""),
-                "published": str(a.get("providerPublishTime", "")),
-                "source":    a.get("publisher", "Yahoo Finance"),
-                "keyword":   keyword
-            })
+        # Use GNews search API for relevant results
+        url = f"https://gnews.io/api/v4/search?q={requests.utils.quote(keyword)}&lang=en&country=in&max=5&apikey={GNEWS_API_KEY}"
+        res = requests.get(url, timeout=10).json()
+        articles = res.get("articles", [])
+        result = []
+        # Filter — only keep articles where keyword words appear in title
+        keyword_words = [w.lower() for w in keyword.split() if len(w) > 3]
+        for a in articles:
+            title = a.get("title", "").lower()
+            desc  = a.get("description", "").lower()
+            # Check if at least one keyword word appears in title or description
+            if any(word in title or word in desc for word in keyword_words):
+                result.append({
+                    "title":     a.get("title", ""),
+                    "link":      a.get("url", ""),
+                    "published": a.get("publishedAt", ""),
+                    "source":    a.get("source", {}).get("name", "GNews"),
+                    "keyword":   keyword
+                })
         return result
     except Exception as e:
         logger.error(f"News fetch error for {keyword}: {e}")
