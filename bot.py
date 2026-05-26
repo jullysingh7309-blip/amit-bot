@@ -725,33 +725,41 @@ def get_news_hash(title, link):
 
 def fetch_google_news_rss(keyword):
     try:
-        # Use GNews search API for relevant results
-        url = f"https://gnews.io/api/v4/search?q={requests.utils.quote(keyword)}&lang=en&country=in&max=5&apikey={GNEWS_API_KEY}"
-        res = requests.get(url, timeout=10).json()
-        articles = res.get("articles", [])
+        query   = requests.utils.quote(keyword)
+        url     = f"https://www.bing.com/news/search?q={query}&format=rss&mkt=en-IN"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"}
+        res     = requests.get(url, headers=headers, timeout=10)
+        if res.status_code != 200:
+            logger.error(f"Bing RSS error: {res.status_code}")
+            return []
+        from xml.etree import ElementTree as ET
+        root    = ET.fromstring(res.content)
+        channel = root.find("channel")
+        if channel is None:
+            return []
         result = []
-        # Strict filter — keyword must appear in TITLE only
         keyword_words = [w.lower() for w in keyword.split() if len(w) > 3]
-        for a in articles:
-            title = a.get("title", "").lower()
-            # ALL main words must appear in title for strict relevance
-            main_words = [w for w in keyword_words if w not in ["india","etf","crash","fall","drop","rate","price","market","stock"]]
-            if not main_words:
-                main_words = keyword_words[:2]
-            # At least 2 keyword words must be in title
-            matches = sum(1 for word in keyword_words if word in title)
+        for item in channel.findall("item")[:10]:
+            title = item.findtext("title", "")
+            link  = item.findtext("link", "")
+            pub   = item.findtext("pubDate", "")
+            src   = item.findtext("source", "Bing News")
+            # Strict filter — at least 2 keyword words in title
+            title_lower = title.lower()
+            matches = sum(1 for w in keyword_words if w in title_lower)
             if matches >= 2:
                 result.append({
-                    "title":     a.get("title", ""),
-                    "link":      a.get("url", ""),
-                    "published": a.get("publishedAt", ""),
-                    "source":    a.get("source", {}).get("name", "GNews"),
+                    "title":     title,
+                    "link":      link,
+                    "published": pub,
+                    "source":    src,
                     "keyword":   keyword
                 })
         return result
     except Exception as e:
         logger.error(f"News fetch error for {keyword}: {e}")
         return []
+
 
 def send_news_alert_email(articles):
     try:
@@ -864,7 +872,7 @@ def main():
     scheduler.add_job(job_price_alerts, "interval", minutes=5)
     scheduler.add_job(job_etf_alerts,   "interval", minutes=5)
     scheduler.add_job(job_reminders,    "interval", minutes=1)
-    scheduler.add_job(job_realtime_news, 'interval', minutes=60)
+    scheduler.add_job(job_realtime_news, 'interval', minutes=30)
     scheduler.start()
 
     logger.info("✅ Bot is running!")
