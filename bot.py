@@ -832,18 +832,19 @@ table{{width:100%;border-collapse:collapse}}
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, RECIPIENTS, msg.as_string())
 
-        logger.info(f"✅ NEWS ALERT EMAIL SENT to {RECIPIENTS} for: {articles[0]['keyword']}")
+        logger.info(f"✅ EMAIL SENT to both addresses for: {articles[0]['keyword']}")
     except Exception as e:
         logger.error(f"News alert email error: {e}")
 
 def job_realtime_news():
+    logger.info("🔥 NEWS JOB RUNNING NOW")
     sent_news = {}  # TEST MODE
     new_articles = []
-    logger.info(f"🔍 Starting news check for {len(NEWS_KEYWORDS)} keywords...")
 
     for keyword in NEWS_KEYWORDS:
+        logger.info(f"🔍 Checking keyword: {keyword}")
         articles = fetch_google_news_rss(keyword)
-        logger.info(f"  Keyword '{keyword}': {len(articles)} articles found")
+        logger.info(f"📰 Found {len(articles)} articles for: {keyword}")
         for article in articles:
             news_hash = get_news_hash(article["title"], article["link"])
             if not sent_news.get(news_hash):
@@ -861,10 +862,13 @@ def job_realtime_news():
                     )
                     send_to_all_sync(msg)
 
+    logger.info(f"📊 Total new articles found: {len(new_articles)}")
     if new_articles:
         save_sent_news(sent_news)
-        # Limit to 3 articles max per run to avoid spam
+        logger.info(f"📧 Sending email for {len(new_articles[:3])} articles...")
         send_news_alert_email(new_articles[:3])
+    else:
+        logger.info("⚠️ No new articles found this run")
 
     # Clean old entries — keep only last 1000 to prevent file bloat
     if len(sent_news) > 1000:
