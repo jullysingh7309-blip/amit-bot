@@ -84,8 +84,8 @@ def fetch_etf_losers(symbols_dict):
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
             res = requests.get(url, headers=headers, timeout=10).json()
             meta     = res["chart"]["result"][0]["meta"]
-            price    = meta["regularMarketPrice"]
-            prev     = meta["previousClose"]
+            price    = meta.get("regularMarketPrice") or meta.get("chartPreviousClose", 0)
+            prev     = meta.get("previousClose") or meta.get("regularMarketPreviousClose") or meta.get("chartPreviousClose", price)
             change   = round(price - prev, 2)
             pct      = round((change / prev) * 100, 2)
             currency = "₹" if ".NS" in symbol else "$"
@@ -396,12 +396,14 @@ def get_market():
         headers = {"User-Agent": "Mozilla/5.0"}
         s = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5EBSESN?interval=1d&range=1d", headers=headers, timeout=10).json()
         n = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=1d&range=1d",  headers=headers, timeout=10).json()
-        sensex  = s["chart"]["result"][0]["meta"]["regularMarketPrice"]
-        s_prev  = s["chart"]["result"][0]["meta"]["previousClose"]
+        s_meta  = s["chart"]["result"][0]["meta"]
+        sensex  = s_meta.get("regularMarketPrice") or s_meta.get("chartPreviousClose", 0)
+        s_prev  = s_meta.get("previousClose") or s_meta.get("regularMarketPreviousClose") or s_meta.get("chartPreviousClose", sensex)
         s_chg   = round(sensex - s_prev, 2)
         s_pct   = round((s_chg / s_prev) * 100, 2)
-        nifty   = n["chart"]["result"][0]["meta"]["regularMarketPrice"]
-        n_prev  = n["chart"]["result"][0]["meta"]["previousClose"]
+        n_meta  = n["chart"]["result"][0]["meta"]
+        nifty   = n_meta.get("regularMarketPrice") or n_meta.get("chartPreviousClose", 0)
+        n_prev  = n_meta.get("previousClose") or n_meta.get("regularMarketPreviousClose") or n_meta.get("chartPreviousClose", nifty)
         n_chg   = round(nifty - n_prev, 2)
         n_pct   = round((n_chg / n_prev) * 100, 2)
         return (
@@ -726,33 +728,27 @@ def get_news_hash(title, link):
 def fetch_google_news_rss(keyword):
     try:
         query   = requests.utils.quote(keyword)
-        url     = f"https://www.bing.com/news/search?q={query}&format=rss&mkt=en-IN"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"}
-        res     = requests.get(url, headers=headers, timeout=10)
-        if res.status_code != 200:
-            logger.error(f"Bing RSS error: {res.status_code}")
-            return []
-        from xml.etree import ElementTree as ET
-        root    = ET.fromstring(res.content)
-        channel = root.find("channel")
-        if channel is None:
-            return []
+        # Use GNews with strict India filter
+        url = f"https://gnews.io/api/v4/search?q={query}&lang=en&country=in&max=10&apikey={GNEWS_API_KEY}"
+        res = requests.get(url, timeout=10).json()
+        articles = res.get("articles", [])
         result = []
-        keyword_words = [w.lower() for w in keyword.split() if len(w) > 3]
-        for item in channel.findall("item")[:10]:
-            title = item.findtext("title", "")
-            link  = item.findtext("link", "")
-            pub   = item.findtext("pubDate", "")
-            src   = item.findtext("source", "Bing News")
-            # Strict filter — at least 2 keyword words in title
-            title_lower = title.lower()
-            matches = sum(1 for w in keyword_words if w in title_lower)
-            if matches >= 2:
+        # Very strict filter - ALL important words must be in title
+        keyword_words = [w.lower() for w in keyword.split() if len(w) > 3
+                        and w.lower() not in ["india","etf","crash","fall","drop","rate","price","market","stock","news"]]
+        if not keyword_words:
+            keyword_words = [w.lower() for w in keyword.split() if len(w) > 3][:2]
+        for a in articles:
+            title = a.get("title","").lower()
+            desc  = a.get("description","").lower()
+            combined = title + " " + desc
+            # ALL keyword words must appear somewhere
+            if all(word in combined for word in keyword_words):
                 result.append({
-                    "title":     title,
-                    "link":      link,
-                    "published": pub,
-                    "source":    src,
+                    "title":     a.get("title",""),
+                    "link":      a.get("url",""),
+                    "published": a.get("publishedAt",""),
+                    "source":    a.get("source",{}).get("name","GNews"),
                     "keyword":   keyword
                 })
         return result
