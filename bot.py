@@ -730,13 +730,17 @@ def fetch_google_news_rss(keyword):
         res = requests.get(url, timeout=10).json()
         articles = res.get("articles", [])
         result = []
-        # Filter — only keep articles where keyword words appear in title
+        # Strict filter — keyword must appear in TITLE only
         keyword_words = [w.lower() for w in keyword.split() if len(w) > 3]
         for a in articles:
             title = a.get("title", "").lower()
-            desc  = a.get("description", "").lower()
-            # Check if at least one keyword word appears in title or description
-            if any(word in title or word in desc for word in keyword_words):
+            # ALL main words must appear in title for strict relevance
+            main_words = [w for w in keyword_words if w not in ["india","etf","crash","fall","drop","rate","price","market","stock"]]
+            if not main_words:
+                main_words = keyword_words[:2]
+            # At least 2 keyword words must be in title
+            matches = sum(1 for word in keyword_words if word in title)
+            if matches >= 2:
                 result.append({
                     "title":     a.get("title", ""),
                     "link":      a.get("url", ""),
