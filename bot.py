@@ -823,7 +823,7 @@ table{{width:100%;border-collapse:collapse}}
         logger.error(f"News alert email error: {e}")
 
 def job_realtime_news():
-    sent_news = load_sent_news()
+    sent_news = {}  # TEST MODE — sends all current news
     new_articles = []
 
     for keyword in NEWS_KEYWORDS:
