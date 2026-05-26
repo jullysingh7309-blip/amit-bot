@@ -11,8 +11,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import asyncio
-import feedparser
 import hashlib
+from xml.etree import ElementTree as ET
 
 # ============================================================
 # CONFIG
@@ -712,8 +712,8 @@ if __name__ == "__main__":
 # ============================================================
 # REAL-TIME NEWS ALERTS — Google News RSS every 10 seconds
 # ============================================================
-import feedparser
 import hashlib
+from xml.etree import ElementTree as ET
 
 # Keywords to monitor — add or remove as needed
 NEWS_KEYWORDS = [
@@ -750,14 +750,24 @@ def fetch_google_news_rss(keyword):
     try:
         query   = keyword.replace(" ", "+")
         url     = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
-        feed    = feedparser.parse(url)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res     = requests.get(url, headers=headers, timeout=10)
+        root    = ET.fromstring(res.content)
+        channel = root.find("channel")
         articles = []
-        for entry in feed.entries[:5]:
+        if channel is None:
+            return []
+        for item in channel.findall("item")[:5]:
+            title     = item.findtext("title", "")
+            link      = item.findtext("link", "")
+            published = item.findtext("pubDate", "")
+            source_el = item.find("source")
+            source    = source_el.text if source_el is not None else "Google News"
             articles.append({
-                "title":     entry.get("title", ""),
-                "link":      entry.get("link", ""),
-                "published": entry.get("published", ""),
-                "source":    entry.get("source", {}).get("title", "Google News"),
+                "title":     title,
+                "link":      link,
+                "published": published,
+                "source":    source,
                 "keyword":   keyword
             })
         return articles
@@ -823,7 +833,7 @@ table{{width:100%;border-collapse:collapse}}
         logger.error(f"News alert email error: {e}")
 
 def job_realtime_news():
-    sent_news = {}  # TEST MODE — sends all current news
+    sent_news = load_sent_news()
     new_articles = []
 
     for keyword in NEWS_KEYWORDS:
